@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>XGMAP — Live Events</title>
+
+  <link rel="manifest" href="manifest.json">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="XGMAP">
+  <meta name="theme-color" content="#0b1220">
+
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app">
+    <header>
+      <div class="title">XGMAP — Live Earthquake Map</div>
+      <div class="controls">
+        <label for="hours">Lookback (hours): <span id="hoursLabel">1</span>h</label>
+        <input id="hours" type="range" min="1" max="24" value="1" />
+        <button id="refreshBtn" aria-label="Refresh">Refresh</button>
+        <button id="installBtn" style="display:none">Install</button>
+      </div>
+    </header>
+
+    <main>
+      <div id="map"></div>
+      <div id="list" aria-live="polite"></div>
+    </main>
+
+    <footer>
+      <small>Data source: USGS (earthquake.usgs.gov). Tap a marker for details. Add to home screen for quick access.</small>
+    </footer>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+  <script src="app.js"></script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('sw.js').then(() => console.log('SW registered')).catch(() => console.log('SW failed'));
+    }
+  </script>
+</body>
+</html>
+:root{
+  --bg:#0b1220; --card:#0f1724; --accent:#06b6d4; --text:#e6eef8;
+}
+*{box-sizing:border-box}
+html,body,#app{height:100%;margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial;}
+body{background:var(--bg);color:var(--text);-webkit-font-smoothing:antialiased;}
+header{display:flex;flex-direction:column;padding:10px;background:linear-gradient(180deg,rgba(255,255,255,0.02),transparent);backdrop-filter:blur(6px);}
+.title{font-weight:600;font-size:16px;margin-bottom:8px}
+.controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.controls input[type=range]{width:140px}
+.controls button{background:var(--accent);color:#042028;border:none;padding:6px 8px;border-radius:8px;font-weight:600}
+main{display:flex;height:calc(100% - 120px)}
+#map{flex:1}
+#list{width:340px;max-width:40%;background:var(--card);padding:8px;overflow:auto}
+.event{padding:8px;border-bottom:1px solid rgba(255,255,255,0.03)}
+.event h4{margin:0 0 6px;font-size:14px}
+.event p{margin:0;font-size:13px;color:#bcd}
+footer{position:fixed;left:12px;right:12px;bottom:12px;text-align:center;font-size:12px;color:#9fb;pointer-events:none}
+
+@media (max-width:800px){
+  main{flex-direction:column}
+  #list{width:100%;max-width:100%;height:220px}
+  footer{bottom:88px}
+}
+(() => {
+  const USGS_URL = 'https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_hour.geojson';
+  const map = L.map('map', { preferCanvas: true }).setView([20, 0], 2);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '&copy; OpenStreetMap contributors'
+  }).addTo(map);
+
+  const clusterGroup = L.markerClusterGroup();
+  map.addLayer(clusterGroup);
+
+  const hoursInput = document.getElementById('hours');
+  const hoursLabel = document.getElementById('hoursLabel');
+  const refreshBtn = document.getElementById('refreshBtn');
+  const installBtn = document.getElementById('installBtn');
+  const listEl = document.getElementById('list');
+
+  let events = [];
+  let deferredPrompt = null;
+
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    deferredPrompt = e;
+    installBtn.style.display = 'inline-block';
+  });
+
+  installBtn.addEventListener('click', async () => {
+    if (!deferredPrompt) return;
+    deferredPrompt.prompt();
+    await deferredPrompt.userChoice;
+    deferredPrompt = null;
+    installBtn.style.display = 'none';
+  });
+
+  hoursInput.addEventListener('input', () => {
+    hoursLabel.textContent = hoursInput.value;
+    render();
+  });
+
+  refreshBtn.addEventListener('click', fetchAndRender);
+
+  function withinHours(ts, h) {
+    const age = (Date.now() - ts) / (1000 * 60 * 60);
+    return age <= h;
+  }
+
+  function niceTime(ts) {
+    return new Date(ts).toLocaleString();
+  }
+
+  function render() {
+    clusterGroup.clearLayers();
+    listEl.innerHTML = '';
+
+    const lookback = Number(hoursInput.value) || 1;
+    const filtered = events.filter(e => e.geometry && withinHours(e.properties.time, lookback));
+    filtered.sort((a, b) => b.properties.time - a.properties.time);
+
+    filtered.forEach(e => {
+      const coords = e.geometry.coordinates;
+      const lat = coords[1];
+      const lon = coords[0];
+      if (lat == null || lon == null) return;
+
+      const mag = e.properties.mag || '–';
+      const title = e.properties.title || 'Event';
+
+      const marker = L.circleMarker([lat, lon], {
+        radius: Math.max(4, (mag || 0) * 2),
+        color: mag >= 5 ? '#ff3b30' : mag >= 3 ? '#ffb020' : '#06b6d4',
+        fillOpacity: 0.8,
+        weight: 1
+      });
+
+      marker.bindPopup(`<b>${title}</b><br/>Mag: ${mag}<br/>${niceTime(e.properties.time)}<br/><a href="${e.properties.url}" target="_blank">Source</a>`);
+      clusterGroup.addLayer(marker);
+
+      const div = document.createElement('div');
+      div.className = 'event';
+      div.innerHTML = `<h4>${title}</h4><p>Mag: ${mag} — ${niceTime(e.properties.time)}</p>`;
+      div.addEventListener('click', () => {
+        map.setView([lat, lon], 6, { animate: true });
+      });
+      listEl.appendChild(div);
+    });
+
+    if (filtered.length === 0) {
+      listEl.innerHTML = '<div class="event"><p>No recent events in the selected window.</p></div>';
+    }
+  }
+
+  async function fetchAndRender() {
+    try {
+      const res = await fetch(USGS_URL, { cache: 'no-store' });
+      if (!res.ok) throw new Error('Network error');
+      const data = await res.json();
+      events = data.features || [];
+      render();
+    } catch (err) {
+      console.error('Fetch error', err);
+      render();
+    }
+  }
+
+  fetchAndRender();
+  setInterval(fetchAndRender, 60_000);
+  document.addEventListener('touchstart', () => {}, { passive: true });
+})();
+const CACHE_NAME = 'xgmap-v1';
+const ASSETS = [
+  '/',
+  '/index.html',
+  '/styles.css',
+  '/app.js',
+  '/manifest.json',
+  'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js',
+  'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css',
+  'https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.js',
+  'https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css'
+];
+
+self.addEventListener('install', (e) => {
+  e.waitUntil(
+    caches.open(CACHE_NAME).then(cache => cache.addAll(ASSETS))
+  );
+  self.skipWaiting();
+});
+
+self.addEventListener('activate', (e) => {
+  e.waitUntil(
+    caches.keys().then(keys => Promise.all(
+      keys.map(k => (k !== CACHE_NAME) ? caches.delete(k) : null)
+    ))
+  );
+  self.clients.claim();
+});
+
+self.addEventListener('fetch', (e) => {
+  const req = e.request;
+  if (req.url.includes('earthquake.usgs.gov')) {
+    e.respondWith(fetch(req).catch(() => caches.match(req)));
+    return;
+  }
+
+  e.respondWith(
+    caches.match(req).then(resp => resp || fetch(req).catch(() => caches.match('/index.html')))
+  );
+});
+XGMAP — iOS PWA (USGS)
+
+This is a static Progressive Web App that polls the USGS earthquake feed and displays events on a touch-optimized map for iPhone/iPad.
+
+Quick steps to host on GitHub Pages:
+1. Create a GitHub repository named xgmap.
+2. Upload these files to the repo root.
+3. Go to Settings → Pages → Branch: main / root.
+4. Save. GitHub will provide a Pages URL.
+5. Open the URL in Safari, then tap Share → Add to Home Screen.
+
+Notes:
+- The app is client-only and fetches USGS directly from the browser.
+- This is a static app; no backend is required.
+- For more sources, add a backend API and update the app fetch URLs.

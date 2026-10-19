@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>XGMAP — Live Events</title>
+
+  <link rel="manifest" href="manifest.json">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="XGMAP">
+  <meta name="theme-color" content="#0b1220">
+
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app">
+    <header>
+      <div class="title">XGMAP — Live Earthquake Map</div>
+      <div class="controls">
+        <label for="hours">Lookback (hours): <span id="hoursLabel">1</span>h</label>
+        <input id="hours" type="range" min="1" max="24" value="1" />
+        <button id="refreshBtn" aria-label="Refresh">Refresh</button>
+        <button id="installBtn" style="display:none">Install</button>
+      </div>
+    </header>
+
+    <main>
+      <div id="map"></div>
+      <div id="list" aria-live="polite"></div>
+    </main>
+
+    <footer>
+      <small>Data source: USGS (earthquake.usgs.gov). Tap a marker for details. Add to home screen for quick access.</small>
+    </footer>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+  <script src="app.js"></script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('sw.js').then(() => console.log('SW registered')).catch(() => console.log('SW failed'));
+    }
+  </script>
+</body>
+</html>
